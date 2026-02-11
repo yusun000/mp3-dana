@@ -1,0 +1,16 @@
+# Exclude actual music files
+music/
+music_usb/
+*.mp3
+*.m4a
+*.w4a
+
+# Exclude cache and libraries
+**/cover_cache.jpg
+getid3/
+qrcode.min.js
+
+# OS files
+.DS_Store
+Thumbs.db
+
