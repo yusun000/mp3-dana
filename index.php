@@ -40,12 +40,36 @@ if (isset($_GET['info'])) {
     $cleanPath = preg_replace('/^' . preg_quote($musicRootName . '/', '/') . '/', '', $infoRelPath);
     $infoAbsPath = realpath($baseDir . DIRECTORY_SEPARATOR . $cleanPath);
     $lyrics = "";
+    $lrc = "";
+
     if ($infoAbsPath && is_file($infoAbsPath)) {
+        // Prefer a sidecar .lrc file with the same basename as the audio file.
+        // Example: "01 - Song.mp3" -> "01 - Song.lrc"
+        $lrcBase = pathinfo($infoAbsPath, PATHINFO_DIRNAME)
+                 . DIRECTORY_SEPARATOR
+                 . pathinfo($infoAbsPath, PATHINFO_FILENAME);
+
+        foreach ([$lrcBase . '.lrc', $lrcBase . '.LRC'] as $lrcCandidate) {
+            if (is_file($lrcCandidate) && is_readable($lrcCandidate)) {
+                $lrc = file_get_contents($lrcCandidate);
+                if ($lrc !== false) break;
+                $lrc = "";
+            }
+        }
+
+        // Existing ID3 lyrics remain available as a fallback.
         $fileInfo = $getID3->analyze($infoAbsPath);
-        $lyrics = $fileInfo['comments']['lyrics'][0] ?? $fileInfo['id3v2']['comments']['unsynchronised_lyric'][0] ?? "";
+        $lyrics = $fileInfo['comments']['lyrics'][0]
+               ?? $fileInfo['id3v2']['comments']['unsynchronised_lyric'][0]
+               ?? "";
     }
-    header('Content-Type: application/json');
-    echo json_encode(['lyrics' => $lyrics]);
+
+    header('Content-Type: application/json; charset=UTF-8');
+    echo json_encode([
+        'lyrics' => $lyrics,
+        'lrc' => $lrc,
+        'synced' => ($lrc !== "")
+    ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
 }
 
@@ -156,7 +180,27 @@ $hasSongs = (count($songs) > 0);
         .ctrl-btn.active { background: var(--accent); }
         #qr-box { display: none; position: absolute; bottom: 100px; left: 20px; background: white; padding: 12px; border-radius: 8px;  box-shadow: 0 0 20px rgba(0,0,0,0.5); z-index: 1200; }
         #qr-box img { border-radius: 0 !important; }
-        #lyrics-box { display: none; position: fixed; bottom: 140px; right: 20px; width: 320px; max-height: 50vh; background: rgba(0,0,0,0.9); padding: 25px; border-radius: 12px; border: 1px solid #444; font-size: 0.85rem; overflow-y: auto; white-space: pre-wrap; line-height: 1.8; color: #fff; z-index: 1100; pointer-events: none; }
+        #lyrics-box { display: none; position: fixed; bottom: 140px; right: 20px; width: min(420px, calc(100vw - 40px)); max-height: 58vh; background: rgba(0,0,0,0.92); border-radius: 12px; border: 1px solid #444; color: #fff; z-index: 1100; overflow: hidden; box-shadow: 0 10px 35px rgba(0,0,0,0.35); }
+        #lyrics-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #333; background: rgba(255,255,255,0.04); position: relative; z-index: 4; flex-shrink: 0; }
+        #lyrics-status { flex: 1; font-size: 0.72rem; color: #aaa; letter-spacing: 0.04em; }
+        .lyrics-btn { background: #333; border: 1px solid #555; color: #fff; padding: 4px 10px; border-radius: 14px; cursor: pointer; font-size: 0.68rem; }
+        .lyrics-btn.active { background: var(--accent); border-color: var(--accent); }
+        #lyrics-content { max-height: calc(58vh - 46px); overflow-y: auto; padding: 24vh 20px; scroll-behavior: smooth; }
+        .lyric-line { margin: 0; padding: 7px 8px; border-radius: 7px; line-height: 1.65; opacity: 0.36; font-size: 0.92rem; transition: opacity 0.22s, transform 0.22s, font-size 0.22s, background 0.22s; cursor: pointer; white-space: pre-wrap; }
+        .lyric-line:hover { opacity: 0.8; background: rgba(255,255,255,0.06); }
+        .lyric-line.past { opacity: 0.52; }
+        .lyric-line.current { opacity: 1; background: rgba(255,153,0,0.14); font-size: 1.08rem; font-weight: bold; transform: scale(1.015); }
+        #lyrics-box.focus-mode .lyric-line { display: none; }
+        #lyrics-box.focus-mode .lyric-line.current,
+        #lyrics-box.focus-mode .lyric-line.current + .lyric-line { display: block; }
+        #lyrics-box.focus-mode #lyrics-content { padding-top: 22vh; padding-bottom: 22vh; }
+        .plain-lyrics { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 0.88rem; padding: 20px; }
+        #lyrics-content.plain-mode { padding: 0; }
+        #lyrics-return { display: none; position: absolute; right: 14px; bottom: 14px; z-index: 3; background: var(--accent); color: #fff; border: 0; border-radius: 18px; padding: 7px 12px; cursor: pointer; font-size: 0.7rem; box-shadow: 0 3px 12px rgba(0,0,0,0.35); }
+        @media (max-width: 640px) {
+            #lyrics-box { left: 10px; right: 10px; bottom: 135px; width: auto; max-height: 55vh; }
+            #lyrics-content { max-height: calc(55vh - 46px); }
+        }
     </style>
 </head>
 <body class="view-square">
@@ -197,7 +241,15 @@ $hasSongs = (count($songs) > 0);
     </div>
 </div>
 
-<div id="lyrics-box"></div>
+<div id="lyrics-box">
+    <div id="lyrics-toolbar">
+        <span id="lyrics-status">LYRICS</span>
+        <button id="lyrics-follow-btn" class="lyrics-btn active" onclick="resumeLyricsFollow()">FOLLOW</button>
+        <button id="lyrics-focus-btn" class="lyrics-btn" onclick="toggleLyricsFocus()">FOCUS</button>
+    </div>
+    <div id="lyrics-content"></div>
+    <button id="lyrics-return" onclick="resumeLyricsFollow()">Return to current line</button>
+</div>
 
 <div id="player-bar">
     <?php if ($hasQR): ?><div id="qr-box"><div id="qrcode"></div></div><?php endif; ?>
@@ -216,12 +268,19 @@ $hasSongs = (count($songs) > 0);
 </div>
 
 <script>
-    const audio = document.getElementById('audio-main'), 
-          songElems = document.querySelectorAll('.song'), 
-          lyricsBox = document.getElementById('lyrics-box'), 
+    const audio = document.getElementById('audio-main'),
+          songElems = document.querySelectorAll('.song'),
+          lyricsBox = document.getElementById('lyrics-box'),
+          lyricsContent = document.getElementById('lyrics-content'),
+          lyricsStatus = document.getElementById('lyrics-status'),
+          lyricsFollowBtn = document.getElementById('lyrics-follow-btn'),
+          lyricsFocusBtn = document.getElementById('lyrics-focus-btn'),
+          lyricsReturnBtn = document.getElementById('lyrics-return'),
           miniCover = document.getElementById('cover-art-mini');
-    
+
     let isShuffle = false, repeatMode = 1, currentIndex = -1, qrcode = null;
+    let syncedLyrics = [], currentLyricIndex = -1, lyricsFollow = true, lyricsFocus = false;
+    let lyricsProgrammaticScroll = false;
 
     function setView(mode) {
         document.body.classList.remove('view-circle','view-square','view-list');
@@ -229,12 +288,12 @@ $hasSongs = (count($songs) > 0);
         localStorage.setItem('music_view_mode', mode);
         document.querySelectorAll('.view-btn').forEach(b => b.classList.toggle('active', b.getAttribute('onclick').includes(mode)));
     }
-    
+
     function toggleTheme() {
         const isLight = document.body.classList.toggle('light');
         localStorage.setItem('music_theme', isLight ? 'light' : 'dark');
     }
-    
+
     function toggleCoverZoom() { miniCover.classList.toggle('large'); }
 
     if(localStorage.getItem('music_theme') === 'light') document.body.classList.add('light');
@@ -258,6 +317,197 @@ $hasSongs = (count($songs) > 0);
     }
     <?php endif; ?>
 
+    function parseLrc(text) {
+        const entries = [];
+        let offsetMs = 0;
+        const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+
+        for (const rawLine of lines) {
+            const offsetMatch = rawLine.match(/^\s*\[offset:([+-]?\d+)\]\s*$/i);
+            if (offsetMatch) {
+                offsetMs = parseInt(offsetMatch[1], 10) || 0;
+                continue;
+            }
+
+            const timeTagRe = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
+            const lyricText = rawLine.replace(timeTagRe, '').trim();
+            let match;
+
+            while ((match = timeTagRe.exec(rawLine)) !== null) {
+                const minutes = parseInt(match[1], 10);
+                const seconds = parseInt(match[2], 10);
+                const frac = match[3] || '0';
+                const fractionSeconds = parseInt(frac.padEnd(3, '0').slice(0, 3), 10) / 1000;
+
+                entries.push({
+                    time: minutes * 60 + seconds + fractionSeconds,
+                    text: lyricText || '♪'
+                });
+            }
+        }
+
+        const offsetSeconds = offsetMs / 1000;
+        return entries
+            .map(item => ({ ...item, time: Math.max(0, item.time + offsetSeconds) }))
+            .sort((a, b) => a.time - b.time);
+    }
+
+    function resetLyrics() {
+        syncedLyrics = [];
+        currentLyricIndex = -1;
+        lyricsFollow = true;
+        lyricsFocus = false;
+        lyricsBox.classList.remove('focus-mode');
+        lyricsFollowBtn.classList.add('active');
+        lyricsFocusBtn.classList.remove('active');
+        lyricsReturnBtn.style.display = 'none';
+        lyricsContent.innerHTML = '';
+        lyricsContent.classList.remove('plain-mode');
+        lyricsStatus.textContent = 'LYRICS';
+    }
+
+    function renderSyncedLyrics(entries) {
+        resetLyrics();
+        syncedLyrics = entries;
+        lyricsStatus.textContent = 'SYNCED LYRICS';
+
+        const fragment = document.createDocumentFragment();
+
+        entries.forEach((entry, index) => {
+            const line = document.createElement('div');
+            line.className = 'lyric-line';
+            line.dataset.index = index;
+            line.dataset.time = entry.time;
+            line.textContent = entry.text;
+
+            line.addEventListener('click', () => {
+                audio.currentTime = entry.time;
+                if (audio.paused) audio.play();
+                resumeLyricsFollow();
+                updateSyncedLyrics(true);
+            });
+
+            fragment.appendChild(line);
+        });
+
+        lyricsContent.appendChild(fragment);
+        lyricsBox.style.display = 'block';
+        updateSyncedLyrics(true);
+    }
+
+    function renderPlainLyrics(text) {
+        resetLyrics();
+        lyricsStatus.textContent = 'ID3 LYRICS';
+        lyricsContent.classList.add('plain-mode');
+
+        let normalized = String(text ?? '');
+
+        // Preserve line breaks from ID3/USLT regardless of whether the tag uses
+        // CRLF, CR, LF, or contains escaped "\\n" sequences.
+        normalized = normalized.replace(/\r\n?/g, '\n');
+        if (!normalized.includes('\n') && normalized.includes('\\n')) {
+            normalized = normalized.replace(/\\n/g, '\n');
+        }
+
+        const plain = document.createElement('div');
+        plain.className = 'plain-lyrics';
+        plain.textContent = normalized;
+
+        lyricsContent.appendChild(plain);
+        lyricsBox.style.display = 'block';
+    }
+
+    function findCurrentLyricIndex(time) {
+        let lo = 0;
+        let hi = syncedLyrics.length - 1;
+        let answer = -1;
+
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+
+            if (syncedLyrics[mid].time <= time + 0.05) {
+                answer = mid;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+
+        return answer;
+    }
+
+    function updateSyncedLyrics(forceScroll = false) {
+        if (!syncedLyrics.length) return;
+
+        const nextIndex = findCurrentLyricIndex(audio.currentTime || 0);
+        if (nextIndex === currentLyricIndex && !forceScroll) return;
+
+        currentLyricIndex = nextIndex;
+
+        const lines = lyricsContent.querySelectorAll('.lyric-line');
+        lines.forEach((line, index) => {
+            line.classList.toggle('current', index === currentLyricIndex);
+            line.classList.toggle('past', index < currentLyricIndex);
+        });
+
+        if (lyricsFollow && currentLyricIndex >= 0) {
+            const current = lines[currentLyricIndex];
+            if (current) {
+                lyricsProgrammaticScroll = true;
+
+                // Scroll only the lyric body. scrollIntoView() can also move
+                // ancestor containers, which may clip the toolbar at the top.
+                const targetTop =
+                    current.offsetTop
+                    - (lyricsContent.clientHeight / 2)
+                    + (current.offsetHeight / 2);
+
+                lyricsContent.scrollTo({
+                    top: Math.max(0, targetTop),
+                    behavior: forceScroll ? 'auto' : 'smooth'
+                });
+
+                window.setTimeout(() => {
+                    lyricsProgrammaticScroll = false;
+                }, 500);
+            }
+        }
+    }
+
+    function pauseLyricsFollow() {
+        if (!syncedLyrics.length) return;
+        lyricsFollow = false;
+        lyricsFollowBtn.classList.remove('active');
+        lyricsReturnBtn.style.display = 'block';
+    }
+
+    function resumeLyricsFollow() {
+        if (!syncedLyrics.length) return;
+        lyricsFollow = true;
+        lyricsFollowBtn.classList.add('active');
+        lyricsReturnBtn.style.display = 'none';
+        updateSyncedLyrics(true);
+    }
+
+    function toggleLyricsFocus() {
+        lyricsFocus = !lyricsFocus;
+        lyricsBox.classList.toggle('focus-mode', lyricsFocus);
+        lyricsFocusBtn.classList.toggle('active', lyricsFocus);
+
+        if (lyricsFollow) updateSyncedLyrics(true);
+    }
+
+    lyricsContent.addEventListener('wheel', () => {
+        if (!lyricsProgrammaticScroll) pauseLyricsFollow();
+    }, { passive: true });
+
+    lyricsContent.addEventListener('touchmove', () => {
+        if (!lyricsProgrammaticScroll) pauseLyricsFollow();
+    }, { passive: true });
+
+    audio.addEventListener('timeupdate', () => updateSyncedLyrics(false));
+    audio.addEventListener('seeked', () => updateSyncedLyrics(true));
+
     async function playSong(el, idx) {
         currentIndex = idx;
         songElems.forEach(s => s.classList.remove('playing')); el.classList.add('playing');
@@ -267,13 +517,28 @@ $hasSongs = (count($songs) > 0);
         document.title = `${songName} // mp3-dana`;
         audio.src = songSrc; audio.play();
 
+        resetLyrics();
+        lyricsBox.style.display = 'none';
+
         try {
             const res = await fetch(`?root=<?php echo urlencode($rootKey); ?>&info=${encodeURIComponent(songSrc)}`);
             const data = await res.json();
-            if (data.lyrics && data.lyrics.trim().length > 0) { 
-                lyricsBox.innerText = data.lyrics; lyricsBox.style.display = 'block'; 
-            } else { lyricsBox.style.display = 'none'; }
-        } catch(e) { lyricsBox.style.display = 'none'; }
+
+            if (data.lrc && data.lrc.trim().length > 0) {
+                const parsed = parseLrc(data.lrc);
+
+                if (parsed.length > 0) {
+                    renderSyncedLyrics(parsed);
+                } else if (data.lyrics && data.lyrics.trim().length > 0) {
+                    renderPlainLyrics(data.lyrics);
+                }
+            } else if (data.lyrics && data.lyrics.trim().length > 0) {
+                renderPlainLyrics(data.lyrics);
+            }
+        } catch(e) {
+            resetLyrics();
+            lyricsBox.style.display = 'none';
+        }
     }
 
     audio.onended = () => {
@@ -286,5 +551,3 @@ $hasSongs = (count($songs) > 0);
 </script>
 </body>
 </html>
-
-
