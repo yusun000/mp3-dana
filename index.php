@@ -143,6 +143,23 @@ function saveAlbumCoverJpeg($imageData, $cacheAbs, $maxSize, $quality) {
     return $ok;
 }
 
+/**
+ * List media without interpreting directory names as glob patterns.
+ * Case-insensitive extensions, deterministic ordering.
+ */
+function listMediaFiles($dirAbs) {
+    $files = [];
+    foreach (scandir($dirAbs) ?: [] as $name) {
+        if ($name === '.' || $name === '..') continue;
+        $path = $dirAbs . DIRECTORY_SEPARATOR . $name;
+        if (is_file($path) && in_array(strtolower(pathinfo($name, PATHINFO_EXTENSION)), ['mp3', 'm4a', 'w4a'], true)) {
+            $files[] = $path;
+        }
+    }
+    sort($files, SORT_STRING);
+    return $files;
+}
+
 function getAlbumCover($dirAbs, $dirRel, $musicRootName, $defaultSvg) {
     global $getID3, $coverMaxSize, $coverJpegQuality, $coverValidateCache;
     $cacheName = 'cover_cache.jpg';
@@ -157,18 +174,23 @@ function getAlbumCover($dirAbs, $dirRel, $musicRootName, $defaultSvg) {
     if (isValidCoverCache($cacheAbs, $coverMaxSize)) return $cacheUrl;
 
     if (!is_writable($dirAbs)) return $defaultSvg;
-    // Keep the old album-level and immediate-child fallback behavior.
-    $files = glob($dirAbs . '/*.{mp3,m4a,w4a}', GLOB_BRACE) ?: [];
-    $subs = glob($dirAbs . DIRECTORY_SEPARATOR . '*', GLOB_ONLYDIR) ?: [];
-    foreach ($subs as $sub) {
-        $subFiles = glob($sub . '/*.{mp3,m4a,w4a}', GLOB_BRACE) ?: [];
+    // Scan literal paths: glob() treats [Disc 1], ?, and * as patterns.
+    $files = listMediaFiles($dirAbs);
+    foreach (scandir($dirAbs) ?: [] as $name) {
+        if ($name === '.' || $name === '..') continue;
+        $sub = $dirAbs . DIRECTORY_SEPARATOR . $name;
+        if (!is_dir($sub)) continue;
+        $subFiles = listMediaFiles($sub);
         if ($subFiles) $files[] = $subFiles[0];
     }
     foreach ($files as $f) {
         $info = $getID3->analyze($f);
-        $data = $info['comments']['picture'][0]['data'] ?? null;
-        if ($data !== null && saveAlbumCoverJpeg($data, $cacheAbs, $coverMaxSize, $coverJpegQuality)) {
-            return $cacheUrl;
+        // Try every embedded picture (including ID3v2.2 PIC / type Other).
+        foreach ($info['comments']['picture'] ?? [] as $picture) {
+            $data = $picture['data'] ?? null;
+            if ($data !== null && saveAlbumCoverJpeg($data, $cacheAbs, $coverMaxSize, $coverJpegQuality)) {
+                return $cacheUrl;
+            }
         }
     }
     return $defaultSvg;
