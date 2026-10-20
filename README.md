@@ -21,12 +21,14 @@ mp3-danaは、音楽フォルダを即座にWebプレイヤー化する軽量ス
   **フォルダ中心**: フォルダ構造をそのままリスペクト。
 - **Rich Metadata**: Automatic extraction of cover art and lyrics from ID3 tags.  
   **豊かなメタデータ**: ID3タグからジャケット画像や歌詞を自動抽出。
+- **Compatible Cover Art**: Reuses suitable external JPEG artwork; otherwise generates an RGB JPEG cache (up to 1200 px on either side) from embedded artwork.  
+  **互換性を考慮したカバー画像**: 条件に合う外部JPEGを直接利用し、必要な場合は埋め込み画像からRGB JPEGキャッシュを生成（長辺最大1200px）。
 - **Theme Support**: Dark and Light modes.  
   **テーマ対応**: ダーク・ライトモード切替。
 - **Private & Safe**: Designed for intranet/LAN use.  
   **プライベート設計**: イントラネット・個人利用に最適化。
 - **QR Sync**: (Optional) Scan to sync folders to your phone.  
-  **QR同期**: QRコードでスマホへの引き継ぎ（任意）。
+  **QR同期**: スマホでQRコードを読み取りフォルダを引き継げます（任意）。
 - **Synchronized Lyrics (.lrc)**: If a `.lrc` file with the same basename as the audio file is placed in the same folder, mp3-dana displays synchronized lyrics that follow playback. The current line is highlighted and automatically scrolled into view. Clicking a lyric line seeks playback to that timestamp.  
   **同期歌詞（.lrc）対応**: 音声ファイルと同じフォルダに、同じベース名の `.lrc` ファイルを配置すると、再生位置に同期して歌詞を表示します。現在行をハイライトし、自動スクロールします。歌詞行をクリックすると、その時刻へシークできます。
 
@@ -41,11 +43,41 @@ mp3-danaは、音楽フォルダを即座にWebプレイヤー化する軽量ス
 3. **Install getID3**: Place the [getID3](https://www.getid3.org/) library in a directory named `/getid3` (next to `index.php`).  
    [getID3](https://www.getid3.org/) ライブラリを `/getid3` という名前のフォルダで配置します（`index.php` と同じ階層）。
 
-4. **Optional QR Sync**: (Optional) Place `qrcode.min.js` next to `index.php`.  
+4. **Enable PHP GD for artwork conversion**: PNG and other supported embedded images are decoded and saved as JPEG using the GD extension.  
+   **カバーアート変換にはPHP GD拡張が必要です**。PNG等の埋め込み画像をJPEGへ変換する場合に使用します。Ubuntuの例：`sudo apt install php-gd`。Webサーバで使用するPHPにもGDが必要です。
+
+5. **Optional QR Sync**: Place `qrcode.min.js` next to `index.php`.  
    （任意）`qrcode.min.js` を `index.php` と同じ階層に配置するとQRコード同期が有効になります。
 
-5. **Access via Browser**: Open the directory in your web browser.  
+6. **Access via Browser**: Open the directory in your web browser.  
    ブラウザでアクセスして完了です。
+
+## Album Art / カバーアート
+
+`mp3-dana` checks album artwork in this order (with the default settings):
+
+1. If `cover_cache.jpg` exists, reuse it **without checking image format or dimensions** (`$coverValidateCache = false`).
+2. Otherwise, look for an external **actual JPEG** in the same directory using the following names, in order:
+   `Cover.jpg`, `cover.jpg`, `AlbumArtSmall.jpg`, `albumartsmall.jpg`, `AlbumArt.jpg`, `albumart.jpg`, `Album.jpg`, `album.jpg`, `Folder.jpg`, `folder.jpg`, `Thumb.jpg`, `thumb.jpg`.
+   An external file is used directly only when its width and height are each at most 1200 px.
+3. Otherwise, extract artwork from audio-file metadata and generate `cover_cache.jpg` in RGB JPEG format with aspect ratio preserved and the longest side at most 1200 px. Transparent areas become white.
+4. If no suitable image can be obtained, show a placeholder image.
+
+標準設定では、`cover_cache.jpg` があれば形式・サイズのチェックをせず最優先で利用します。キャッシュがない場合のみ、上記のファイル名の外部JPEG画像を順に確認します。どちらも使えなければ、MP3等の埋め込み画像から `cover_cache.jpg` を生成します。PNGを`.jpg`と名付けただけの画像は、外部JPEGとして直接利用しません。
+
+The settings are defined near the beginning of `index.php`:
+
+```php
+$coverMaxSize = 1200;       // Maximum width or height
+$coverJpegQuality = 85;     // JPEG quality (0-100)
+$coverValidateCache = false; // Fast mode: trust an existing cache
+```
+
+Setting `$coverValidateCache = true` validates existing caches before use. With this setting, a compatible external JPEG may be preferred over an existing cache. Validation reads image metadata and can slow directory listings.  
+`$coverValidateCache = true` にすると既存キャッシュを検証します。検証を有効にすると、適合する外部JPEGが既存キャッシュより優先される場合があります。多数のフォルダでは表示が遅くなることがあります。
+
+**Old caches / 既存キャッシュ:** Existing `cover_cache.jpg` files are not automatically converted in fast mode, even if their actual format is PNG or they are oversized. Run a separate maintenance pass or enable cache validation when migrating existing images. The application does not delete older caches automatically.  
+**既存キャッシュ:** 高速モードでは、PNG形式のままの `cover_cache.jpg` や巨大画像を自動修正しません。必要に応じて保守用バッチなどで一括整備してください。既存キャッシュの自動削除は行いません。
 
 ## Synchronized Lyrics / 同期歌詞
 
@@ -96,32 +128,30 @@ If no matching `.lrc` file exists, mp3-dana falls back to lyrics embedded in the
 
 同名の `.lrc` ファイルが存在しない場合は、従来どおりID3タグ内の歌詞を表示します。
 
-
 ## Optional Features / 追加機能
 
 You can unlock these powerful tools by adding small external libraries.  
 外部ライブラリを追加することで、以下の便利な機能が利用可能になります。
 
-- **QR Sync (via [qrcodejs](https://github.com/davidshimjs/qrcodejs))** Scan the QR code to instantly sync and open the current folder on your mobile device. Perfect for "handing over" your music from PC to phone.  
-  **QR同期**: QRコードをスキャンして、現在開いているフォルダを即座にスマホで共有。PCからスマホへの「再生の引き継ぎ」に最適です。
+- **QR Sync (via [qrcodejs](https://github.com/davidshimjs/qrcodejs))** Scan the QR code to instantly sync and open the current folder on your mobile device. Perfect for "handing over" music from PC to phone.  
+  **QR同期**: QRコードをスキャンして、現在開いているフォルダをスマホへ引き継げます。
 
 ## Notes & Limitations / 注意事項と制限
 
-- **Initial Loading Time** Since this app scans the directory and extracts album art on the fly, the first access to a folder may take some time as it generates a cache (`cover_cache.jpg`).  
-  **初回の読み込み時間**: アクセス時にディレクトリをスキャンしてアルバムアートを抽出するため、キャッシュ（`cover_cache.jpg`）を生成する初回アクセス時のみ表示に時間がかかる場合があります。
+- **Initial Loading Time**: Missing artwork can trigger audio-file scanning and JPEG cache generation while folders are being listed. Once a cache exists, default fast mode reuses it without image validation.  
+  **初回の読み込み時間**: カバー画像がない場合はフォルダ表示中にMP3等の解析・キャッシュ生成を実行するため時間がかかることがあります。キャッシュ生成後は標準設定で検証を省略します。
 
-- **Metadata Dependence** The visual richness of your "shelf" depends on your ID3 tags. We recommend using tools like Mp3tag to organize your library.  
-  **メタデータへの依存**: 「棚」の賑やかさは、ファイルのID3タグに依存します。快適な利用のために、Mp3tagなどのツールでライブラリを整理しておくことをお勧めします。
+- **Metadata Dependence**: Album artwork and lyrics depend on existing metadata. We recommend tools such as Mp3tag to organize your library.  
+  **メタデータへの依存**: 画像や歌詞はメタデータに依存します。Mp3tag等での整理を推奨します。
 
-- **No Playlist Feature** Designed to let you enjoy music "album by album," just like picking a CD from a shelf. Does not support cross-folder playlists.  
-  **プレイリスト機能なし**: 棚からCDを選ぶように「アルバム単位」で音楽を楽しむスタイルに特化しています。フォルダを跨いだプレイリスト作成機能はありません。
+- **No Playlist Feature**: Designed for album-by-album listening; does not support cross-folder playlists.  
+  **プレイリスト機能なし**: フォルダを跨ぐプレイリスト機能はありません。
 
-- **File Permissions** The script needs write permission to create `cover_cache.jpg` in your music folders.  
-  **書き込み権限**: キャッシュ画像を生成するため、音楽フォルダへの書き込み権限が必要です。
+- **File Permissions**: Creating `cover_cache.jpg` requires write permission in the music folder.  
+  **ファイル権限**: キャッシュ生成には対象の音楽フォルダへの書き込み権限が必要です。
 
-- **LRC Timing Accuracy**: Lyric synchronization depends on the timestamps stored in the `.lrc` file. mp3-dana does not automatically analyze vocals or generate timestamps.  
-  **LRCの同期精度**: 歌詞の同期精度は `.lrc` ファイル内のタイムスタンプに依存します。mp3-dana自身が音声解析してタイムスタンプを生成する機能はありません。
-
+- **LRC Timing Accuracy**: Lyrics synchronization depends on timestamps stored in `.lrc`; mp3-dana does not analyze vocals or create timestamps.  
+  **LRCの同期精度**: `.lrc` のタイムスタンプに依存します。自動で歌声解析やタイムスタンプ生成は行いません。
 
 ## Security Notice / セキュリティについて
 This app is for **private intranet use only**. It has no authentication.  
@@ -129,4 +159,3 @@ This app is for **private intranet use only**. It has no authentication.
 
 ## License
 MIT License
-

@@ -16,9 +16,13 @@ $allowedRoots = [
     'usb'     => 'music_usb'   // Additional folder (Optional) / 追加フォルダ（任意）
 ];
 // =========================================================================
+// Cover art options: existing cache is trusted by default for fast browsing.
+$coverMaxSize = 1200;
+$coverJpegQuality = 85;
+$coverValidateCache = false;
 
-$rootKey = $_GET['root'] ?? 'default';
-if (!array_key_exists($rootKey, $allowedRoots)) $rootKey = 'default';
+$rootKey = $_GET['root'] ?? array_key_first($allowedRoots);
+if (!array_key_exists($rootKey, $allowedRoots)) $rootKey = array_key_first($allowedRoots);
 $musicRootName = $allowedRoots[$rootKey];
 $baseDir = realpath(__DIR__ . DIRECTORY_SEPARATOR . $musicRootName);
 
@@ -75,35 +79,96 @@ if (isset($_GET['info'])) {
 
 $noCoverSvg = 'data:image/svg+xml;base64,'.base64_encode('<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg"><circle cx="100" cy="100" r="95" fill="#111" stroke="#333" stroke-width="2"/><circle cx="100" cy="100" r="15" fill="#222"/><path d="M95 110 L95 75 Q95 65 115 60 L115 90" stroke="#ff9900" stroke-width="5" fill="none" stroke-linecap="round"/><circle cx="85" cy="115" r="12" fill="#ff9900"/></svg>');
 
-function getAlbumCover($dirAbs, $dirRel, $musicRootName, $defaultSvg) {
-    global $getID3;
-    $cacheName = 'cover_cache.jpg';
-    $cacheAbs = $dirAbs . DIRECTORY_SEPARATOR . $cacheName;
-    $cacheUrl = $musicRootName . ($dirRel ? '/' . $dirRel : '') . '/' . $cacheName;
-    if (file_exists($cacheAbs)) return $cacheUrl;
-    $files = glob($dirAbs . "/*.{mp3,m4a,w4a}", GLOB_BRACE);
-    if (!empty($files)) {
-        foreach($files as $f) {
-            $info = $getID3->analyze($f);
-            if (isset($info['comments']['picture'][0])) {
-                if (is_writable($dirAbs)) {
-                    file_put_contents($cacheAbs, $info['comments']['picture'][0]['data']);
-                    return $cacheUrl;
-                }
-            }
+/** URL-encode path components without encoding the / separators. */
+function albumArtUrl($rootName, $dirRel, $fileName) {
+    $parts = array_merge([$rootName], $dirRel === '' ? [] : explode('/', $dirRel), [$fileName]);
+    return implode('/', array_map('rawurlencode', $parts));
+}
+
+/** Look for a correctly named, sufficiently small *real* JPEG on disk. */
+function findCompatibleCover($dirAbs, $maxSize = 1200) {
+    $names = [
+        'Cover.jpg', 'cover.jpg', 'AlbumArtSmall.jpg', 'albumartsmall.jpg',
+        'AlbumArt.jpg', 'albumart.jpg', 'Album.jpg', 'album.jpg',
+        'Folder.jpg', 'folder.jpg', 'Thumb.jpg', 'thumb.jpg'
+    ];
+    foreach ($names as $name) {
+        $path = $dirAbs . DIRECTORY_SEPARATOR . $name;
+        if (!is_file($path) || !is_readable($path)) continue;
+        $info = @getimagesize($path);
+        if ($info !== false && $info[2] === IMAGETYPE_JPEG &&
+            $info[0] > 0 && $info[1] > 0 &&
+            $info[0] <= $maxSize && $info[1] <= $maxSize) {
+            return $name;
         }
     }
-    $subDirs = glob($dirAbs . DIRECTORY_SEPARATOR . '*', GLOB_ONLYDIR);
-    foreach ($subDirs as $sub) {
-        $subFiles = glob($sub . "/*.{mp3,m4a,w4a}", GLOB_BRACE);
-        if (!empty($subFiles)) {
-            $info = $getID3->analyze($subFiles[0]);
-            if (isset($info['comments']['picture'][0])) {
-                if (is_writable($dirAbs)) {
-                    file_put_contents($cacheAbs, $info['comments']['picture'][0]['data']);
-                    return $cacheUrl;
-                }
-            }
+    return null;
+}
+
+/** Validate old JPEG cache when explicitly requested. */
+function isValidCoverCache($path, $maxSize) {
+    if (!is_file($path) || !is_readable($path)) return false;
+    $info = @getimagesize($path);
+    return $info !== false && $info[2] === IMAGETYPE_JPEG &&
+           $info[0] > 0 && $info[1] > 0 &&
+           $info[0] <= $maxSize && $info[1] <= $maxSize;
+}
+
+/** Decode embedded artwork and write a real RGB JPEG, max size on either axis. */
+function saveAlbumCoverJpeg($imageData, $cacheAbs, $maxSize, $quality) {
+    if (!is_string($imageData) || $imageData === '' ||
+        !function_exists('imagecreatefromstring') || !function_exists('imagejpeg')) return false;
+    $src = @imagecreatefromstring($imageData);
+    if ($src === false) return false;
+    $w = imagesx($src);
+    $h = imagesy($src);
+    if ($w <= 0 || $h <= 0) { imagedestroy($src); return false; }
+    $scale = min(1.0, $maxSize / max($w, $h));
+    $dw = max(1, (int) round($w * $scale));
+    $dh = max(1, (int) round($h * $scale));
+    $dst = imagecreatetruecolor($dw, $dh);
+    if ($dst === false) { imagedestroy($src); return false; }
+    $white = imagecolorallocate($dst, 255, 255, 255);
+    imagefilledrectangle($dst, 0, 0, $dw - 1, $dh - 1, $white);
+    $ok = imagecopyresampled($dst, $src, 0, 0, 0, 0, $dw, $dh, $w, $h);
+    imagedestroy($src);
+    if (!$ok) { imagedestroy($dst); return false; }
+    // Write in the same directory; don't leave a partially written JPEG behind.
+    $temp = @tempnam(dirname($cacheAbs), '.cover-');
+    if ($temp === false) { imagedestroy($dst); return false; }
+    $ok = @imagejpeg($dst, $temp, $quality);
+    imagedestroy($dst);
+    if ($ok) $ok = @rename($temp, $cacheAbs);
+    if (!$ok) @unlink($temp);
+    return $ok;
+}
+
+function getAlbumCover($dirAbs, $dirRel, $musicRootName, $defaultSvg) {
+    global $getID3, $coverMaxSize, $coverJpegQuality, $coverValidateCache;
+    $cacheName = 'cover_cache.jpg';
+    $cacheAbs = $dirAbs . DIRECTORY_SEPARATOR . $cacheName;
+    $cacheUrl = albumArtUrl($musicRootName, $dirRel, $cacheName);
+
+    // Fast path: no image header reads or MP3 scans for an existing cache.
+    if (is_file($cacheAbs) && !$coverValidateCache) return $cacheUrl;
+    // Reuse external album art instead of creating another copy.
+    $external = findCompatibleCover($dirAbs, $coverMaxSize);
+    if ($external !== null) return albumArtUrl($musicRootName, $dirRel, $external);
+    if (isValidCoverCache($cacheAbs, $coverMaxSize)) return $cacheUrl;
+
+    if (!is_writable($dirAbs)) return $defaultSvg;
+    // Keep the old album-level and immediate-child fallback behavior.
+    $files = glob($dirAbs . '/*.{mp3,m4a,w4a}', GLOB_BRACE) ?: [];
+    $subs = glob($dirAbs . DIRECTORY_SEPARATOR . '*', GLOB_ONLYDIR) ?: [];
+    foreach ($subs as $sub) {
+        $subFiles = glob($sub . '/*.{mp3,m4a,w4a}', GLOB_BRACE) ?: [];
+        if ($subFiles) $files[] = $subFiles[0];
+    }
+    foreach ($files as $f) {
+        $info = $getID3->analyze($f);
+        $data = $info['comments']['picture'][0]['data'] ?? null;
+        if ($data !== null && saveAlbumCoverJpeg($data, $cacheAbs, $coverMaxSize, $coverJpegQuality)) {
+            return $cacheUrl;
         }
     }
     return $defaultSvg;
