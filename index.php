@@ -138,7 +138,16 @@ function saveAlbumCoverJpeg($imageData, $cacheAbs, $maxSize, $quality) {
     if ($temp === false) { imagedestroy($dst); return false; }
     $ok = @imagejpeg($dst, $temp, $quality);
     imagedestroy($dst);
-    if ($ok) $ok = @rename($temp, $cacheAbs);
+
+    if ($ok) {
+      // MiniDLNAなど他ユーザーから読み取れるようにする
+      $ok = @chmod($temp, 0644);
+    }
+
+    if ($ok) {
+      $ok = @rename($temp, $cacheAbs);
+    }
+
     if (!$ok) @unlink($temp);
     return $ok;
 }
